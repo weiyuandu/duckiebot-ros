@@ -33,10 +33,19 @@ class LightServiceNode(DTROS):
         # Duckiebots already have a service for changing LED colours, use that
         # service to change the colours when users call this node's service
         self._led_service = f"/{self.veh_name}/led_emitter_node/set_pattern"
-        rospy.wait_for_service(self._led_service)
-        self._embedded_svc = rospy.ServiceProxy(
-            self._led_service, ChangePattern,
-        )
+        
+        # Try to wait for the LED service, but don't block forever
+        try:
+            rospy.wait_for_service(self._led_service, timeout=5.0)
+            self._embedded_svc = rospy.ServiceProxy(
+                self._led_service, ChangePattern,
+            )
+            self._led_available = True
+            self.log("LED emitter service found and connected.")
+        except rospy.ROSException:
+            self.logwarn(f"LED emitter service not available at {self._led_service}. LED changes will be ignored.")
+            self._embedded_svc = None
+            self._led_available = False
 
         # Subscribe to a shutdown notification topic: when we get a message on
         # this topic, shut down the node.
@@ -70,11 +79,16 @@ class LightServiceNode(DTROS):
         if colour.pattern_name.data not in self._legal_colours:
             rospy.loginfo(f"colour should be in {self._legal_colours} " +
                           f"but got {colour}")
+            
+        if not self._led_available:
+            self.logwarn("LED service not available. Ignoring color change request.")
+            return ChangePatternResponse()
+            
         try:
             # Change the colour of the LEDs
             self._embedded_svc(colour.pattern_name)
         except rospy.ServiceException as e:
-            rospy.logwarn("exception when changing LED colours: ", + str(e))
+            rospy.logwarn("exception when changing LED colours: " + str(e))
 
         # Reply to the client that we received the request
         return ChangePatternResponse()
