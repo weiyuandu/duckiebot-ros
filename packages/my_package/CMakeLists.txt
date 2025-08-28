@@ -11,8 +11,6 @@ catkin_package()
 catkin_install_python(
   PROGRAMS 
     src/camera_reader_node.py
-    src/light_service_node.py
-    src/mock_led_emitter_node.py
     src/my_publisher_node.py
     src/my_subscriber_node.py
     src/square_controller_node.py

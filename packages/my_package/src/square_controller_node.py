@@ -3,16 +3,15 @@
 import os
 import rospy
 from duckietown.dtros import DTROS, NodeType
-from duckietown_msgs.msg import Twist2DStamped
-from duckietown_msgs.srv import ChangePattern, ChangePatternRequest
-from std_msgs.msg import String
+from duckietown_msgs.msg import Twist2DStamped, LEDPattern
+from std_msgs.msg import ColorRGBA
 import time
 import numpy as np
 
 class SquareControllerNode(DTROS):
     """
     Open-loop square controller that moves the duckiebot in a 1m x 1m square
-    with different LED colors at each corner. Connects directly to real LED emitter only.
+    with different LED colors at each corner using RGB LEDPattern messages.
     """
     
     def __init__(self, node_name):
@@ -36,17 +35,13 @@ class SquareControllerNode(DTROS):
             queue_size=1
         )
         
-        # Service client for LED control - connect directly to real LED emitter only
-        led_service_name = f"/{self.veh_name}/led_emitter_node/set_pattern"
-        try:
-            rospy.wait_for_service(led_service_name, timeout=5.0)
-            self._led_service = rospy.ServiceProxy(led_service_name, ChangePattern)
-            self._led_available = True
-            self.log(f"Connected to real LED emitter: {led_service_name}")
-        except rospy.ROSException:
-            self.logwarn(f"Real LED emitter service not available at {led_service_name}. Will continue without LED control.")
-            self._led_service = None
-            self._led_available = False
+        # Publisher for LED control - using RGB pattern approach like the widget
+        led_topic = f"/{self.veh_name}/led_emitter_node/led_pattern"
+        self._led_publisher = rospy.Publisher(
+            led_topic,
+            LEDPattern,
+            queue_size=1
+        )
         
         # Movement parameters (calibrated for real Duckiebot)
         self._linear_velocity = 0.4   # m/s - good speed for real bot
@@ -57,35 +52,47 @@ class SquareControllerNode(DTROS):
         self._move_time = self._edge_distance / self._linear_velocity  # time to move 1 meter
         self._turn_time = (np.pi / 2) / self._angular_velocity         # time for 90-degree turn
         
-        # Colors for each corner of the square (using real LED emitter protocol patterns)
-        self._corner_colors = ["RED", "GREEN", "BLUE", "WHITE"]
+        # Colors for each corner of the square (RGB values like in the widget)
+        self._corner_colors = [
+            [1.0, 0.0, 0.0],  # Red
+            [0.0, 1.0, 0.0],  # Green  
+            [0.0, 0.0, 1.0],  # Blue
+            [1.0, 1.0, 1.0]   # White
+        ]
         
-        # Available LED patterns (from real LED emitter protocol)
-        self._available_patterns = ["RED", "GREEN", "WHITE", "BLUE", "LIGHT_OFF", "CAR_DRIVING", "CAR_SIGNAL_A"]
+        # LED intensity
+        self._intensity = 1.0
         
         self.log(f"Square controller initialized. Move time: {self._move_time:.2f}s, Turn time: {self._turn_time:.2f}s")
         self.log(f"Vehicle name: {self.veh_name}")
         self.log(f"Publishing movement commands to: {car_cmd_topic}")
+        self.log(f"Publishing LED patterns to: {led_topic}")
 
-    def set_led_color(self, color):
-        """Set the LED color using the real LED emitter service"""
-        if not self._led_available:
-            self.log(f"LED service not available, would set color to {color}")
-            return
-            
-        # Validate color pattern is available
-        if color not in self._available_patterns:
-            self.logwarn(f"Pattern '{color}' not in available patterns {self._available_patterns}")
-            return
-            
+    def set_led_color(self, r, g, b, color_name):
+        """Set LED color using RGB values like the widget"""
         try:
-            # Create the correct request object with String message (as per LED emitter service definition)
-            request = ChangePatternRequest()
-            request.pattern_name = String(data=color)
-            response = self._led_service(request)
-            self.log(f"🎨 LED pattern changed to {color}")
-        except rospy.ServiceException as e:
-            self.logwarn(f"Failed to change LED pattern: {e}")
+            # Create LED pattern message
+            pattern = LEDPattern()
+            
+            # Set all 5 LEDs to the same color (like in the widget)
+            for i in range(5):
+                led_color = ColorRGBA()
+                led_color.r = r
+                led_color.g = g
+                led_color.b = b
+                led_color.a = self._intensity
+                pattern.rgb_vals.append(led_color)
+            
+            # Publish the pattern
+            self._led_publisher.publish(pattern)
+            self.log(f"🎨 LED pattern published: RGB[{r}, {g}, {b}]")
+            
+        except Exception as e:
+            self.logwarn(f"Failed to publish LED pattern: {str(e)}")
+
+    def turn_off_leds(self):
+        """Turn off all LEDs"""
+        self.set_led_color(0.0, 0.0, 0.0, "OFF")
 
     def publish_car_cmd(self, linear_v, angular_v):
         """Publish a car command (adapted from EncoderPoseNode)"""
@@ -136,9 +143,12 @@ class SquareControllerNode(DTROS):
                 break
                 
             # Set LED color for this corner
-            color = self._corner_colors[corner]
-            self.set_led_color(color)
-            self.log(f"Corner {corner + 1}: LED set to {color}")
+            rgb = self._corner_colors[corner]
+            color_names = ["RED", "GREEN", "BLUE", "WHITE"]
+            color_name = color_names[corner]
+            
+            self.set_led_color(rgb[0], rgb[1], rgb[2], color_name)
+            self.log(f"Corner {corner + 1}: LED set to {color_name} [{rgb[0]}, {rgb[1]}, {rgb[2]}]")
             
             # Small pause to see the color change
             rospy.sleep(1.0)
@@ -155,7 +165,8 @@ class SquareControllerNode(DTROS):
                 rospy.sleep(0.5)
         
         # Turn off LEDs when done
-        self.set_led_color("LIGHT_OFF")
+        self.turn_off_leds()
+        self.log("🎨 LEDs turned off")
         self.log("Square movement completed!")
 
     def run(self):
@@ -172,8 +183,8 @@ class SquareControllerNode(DTROS):
     def on_shutdown(self):
         """Cleanup when shutting down"""
         self.stop_robot()
-        if self._led_available:
-            self.set_led_color("LIGHT_OFF")
+        self.turn_off_leds()
+        self.log("🎨 LEDs turned off")
         self.log("Square controller shutting down...")
 
 if __name__ == '__main__':
